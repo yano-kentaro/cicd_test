@@ -1,0 +1,343 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: CI/CD test Stack
+
+Metadata:
+  # ------------------------------------------------------------#
+  # Metadata
+  # ------------------------------------------------------------#
+  AWS::CloudFormation::Interface:
+    # ParameterGroups:
+    #   - Label:
+    #       default: Parameters for VPC
+    #     Parameters:
+    #       - VPCCIDR
+    #   - Label:
+    #       default: Parameters for Subnet
+    #     Parameters:
+    #       - PublicSubnet01CIDR
+    #   - Label:
+    #       default: Parameters for ec2
+    #     Parameters:
+    #       - EC2VolumeSize
+    #       - EC2VolumeIOPS
+    #       - EC2AMI
+    #       - EC2InstanceType
+    ResourceTypes:
+      Tags:
+        - Key: DeployedBy
+          Value: !Sub cf-stack-${AWS::StackName}
+
+Parameters:
+  # ------------------------------------------------------------#
+  # Parameters
+  # ------------------------------------------------------------#
+  BuildProjectName:
+    Type: String
+    Description: Repository name
+    Default: test-repository
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+  BuildProjectDescription:
+    Type: String
+    Description: Repository description
+    Default: test-description
+    MaxLength: 4000
+  ECSClusterName:
+    Type: String
+    Description: ECS cluster name
+    Default: test-cluster
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+  ECSServiceName:
+    Type: String
+    Description: ECS service name
+    Default: test-service
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+  ECSContainerName:
+    Type: String
+    Description: ECS container name
+    Default: test-container
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+  ECRRepositoryName:
+    Type: String
+    Description: ECR repository name
+    Default: test-repository
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+  CodeCommitRepositoryName:
+    Type: String
+    Description: CodeCommit repository name
+    Default: test-repository
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+  PipelineName:
+    Type: String
+    Description: CodePipeline name
+    Default: test-pipeline
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+
+Resources:
+  # ------------------------------------------------------------#
+  # CodeBuild
+  # ------------------------------------------------------------#
+  CodeBuildIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "s3:PutObject"
+              - "s3:GetObject"
+            Resource:
+              - !Join
+                - ""
+                - - !GetAtt ArtifactS3Bucket.Arn
+                  - "/*"
+          - Effect: Allow
+            Action:
+              - "codecommit:GitPull"
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource: "*"
+      ManagedPolicyName: iam-policy-codebuild
+
+  CodeBuildIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Ref CodeBuildIAMPolicy
+      RoleName: iam-role-codebuild
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Description: !Ref BuildProjectDescription
+      Environment:
+        PrivilegedMode: true
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:corretto11
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: AWS_DEFAULT_REGION
+            Value: ap-northeast-1
+          - Name: ECR_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com
+          - Name: ECR_REPOSITORY_URI
+            Value: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ECRRepositoryName}
+          - Name: ContainerName
+            Value: !Ref ContainerName
+      Name: !Ref BuildProjectName
+      ServiceRole: !Ref CodeBuildIAMRole
+      Source: 
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              on-failure: ABORT
+              commands:
+                # テスト用のディレクトリを削除する
+                - rm -rf src/test
+                # Secrets Managerから秘密鍵の値を取得して、指定した階層に鍵として配置する
+                - aws secretsmanager get-secret-value --secret-id secret-id --query SecretString --output text > src/main/resources/files/private_key.pk8
+                # S3から必要なファイルを取得して、指定した階層に配置する
+                - aws s3 cp s3://bucket-name/path/to/file src/main/resources/application.properties
+                - aws s3 cp s3://bucket-name/path/to/file src/main/resources/static/favicon.ico
+
+                # ECRのログイン情報を取得し、docker loginを実行する
+                - ECR_URI=${AWS_ACCOUNT_ID}.dkr.ecr.ap-northeast-1.amazonaws.com
+                - REPOSITORY_URI=${ECR_URI}/repository-name
+                - CONTAINER_NAME=container-name
+                - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+                - IMAGE_TAG=${COMMIT_HASH:=latest}
+                - aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin $ECR_URI
+            build:
+              on-failure: ABORT
+              commands:
+                # Javaアプリケーションのビルドを行う
+                - ./gradlew build
+                - cp build/libs/*.jar codebuild/
+                - cp Dockerfile codebuild/
+                # Dockerイメージのビルドとタグ付けを行う
+                - docker build -t $REPOSITORY_URI:latest codebuild/
+                - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+            post_build:
+              on-failure: ABORT
+              commands:
+                - docker push $REPOSITORY_URI:latest
+                - docker push $REPOSITORY_URI:$IMAGE_TAG
+                - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+          artifacts:
+            files: imagedefinitions.json
+        Type: CODEPIPELINE
+      Tags:
+        - Key: Name
+          Value: test-build
+
+  # ------------------------------------------------------------#
+  # CodeDeploy
+  # ------------------------------------------------------------#
+  CodeDeployIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForECS
+      RoleName: iam-role-codedeploy
+
+
+
+
+
+
+
+
+
+
+
+  # ------------------------------------------------------------#
+  # S3
+  # ------------------------------------------------------------#
+  ArtifactS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      BucketName: !Sub ${AWS::StackName}-${AWS::AccountId}-artifact
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+  # ------------------------------------------------------------#
+  # IAM
+  # ------------------------------------------------------------#
+  CodeDeployIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      RoleName: iam-role-codedeploy
+
+  CodePipelineIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - "codecommit:CancelUploadArchive"
+              - "codecommit:GetBranch"
+              - "codecommit:GetCommit"
+              - "codecommit:GetRepository"
+              - "codecommit:GetUploadArchiveStatus"
+              - "codecommit:UploadArchive"
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - "codebuild:BatchGetBuilds"
+              - "codebuild:StartBuild"
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - "codedeploy:CreateDeployment"
+              - "codedeploy:GetApplication"
+              - "codedeploy:GetApplicationRevision"
+              - "codedeploy:GetDeployment"
+              - "codedeploy:GetDeploymentConfig"
+              - "codedeploy:RegisterApplicationRevision"
+            Resource:
+              - "*"
+          - Effect: Allow
+            Action:
+              - "s3:GetObject"
+              - "s3:PutObject"
+              - "s3:ListBucket"
+            Resource:
+              - !Join
+                - ""
+                - - !GetAtt ArtifactS3Bucket.Arn
+                  - "/*"
+              - !GetAtt ArtifactS3Bucket.Arn
+      ManagedPolicyName: iam-policy-codepipeline
+
+  CodePipelineIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - !Ref CodePipelineIAMPolicy
+      RoleName: iam-role-codepipeline
+
+Outputs:
+  # ------------------------------------------------------------#
+  # Outputs
+  # ------------------------------------------------------------#
+  CodeBuildIAMRoleARN:
+    Value: !GetAtt CodeBuildIAMRole.Arn
+    Export:
+      Name: iam-role-codebuild-arn
+
+  CodeDeployIAMRoleARN:
+    Value: !GetAtt CodeDeployIAMRole.Arn
+    Export:
+      Name: iam-role-codedeploy-arn
+
+  CodePipelineIAMRoleARN:
+    Value: !GetAtt CodePipelineIAMRole.Arn
+    Export:
+      Name: iam-role-codepipeline-arn

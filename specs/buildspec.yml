@@ -1,0 +1,43 @@
+version: 0.2
+
+phases:
+  install:
+    on-failure: ABORT
+    runtime-versions:
+      java: corretto11
+  pre_build:
+    on-failure: ABORT
+    commands:
+      # テスト用のディレクトリを削除する
+      - rm -rf src/test
+      # Secrets Managerから秘密鍵の値を取得して、指定した階層に鍵として配置する
+      - aws secretsmanager get-secret-value --secret-id secret-id --query SecretString --output text > src/main/resources/files/private_key.pk8
+      # S3から必要なファイルを取得して、指定した階層に配置する
+      - aws s3 cp s3://bucket-name/path/to/file src/main/resources/application.properties
+      - aws s3 cp s3://bucket-name/path/to/file src/main/resources/static/favicon.ico
+      # ECRのログイン情報を取得し、docker loginを実行する
+      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - ECR_URI=${AWS_ACCOUNT_ID}.dkr.ecr.ap-northeast-1.amazonaws.com
+      - REPOSITORY_URI=${ECR_URI}/repository-name
+      - CONTAINER_NAME=container-name
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+      - aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin $ECR_URI
+  build:
+    on-failure: ABORT
+    commands:
+      # Javaのビルドを行う
+      - ./gradlew build
+      - cp build/libs/*.jar codebuild/
+      - cp Dockerfile codebuild/
+      # Dockerイメージのビルドとタグ付けを行う
+      - docker build -t $REPOSITORY_URI:latest codebuild/
+      - docker tag $REPOSITORY_URI:latest $REPOSITORY_URI:$IMAGE_TAG
+  post_build:
+    on-failure: ABORT
+    commands:
+      - docker push $REPOSITORY_URI:latest
+      - docker push $REPOSITORY_URI:$IMAGE_TAG
+      - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
+artifacts:
+  files: imagedefinitions.json

@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: CI/CD CodeCommit Stack
+
+Metadata:
+  # ------------------------------------------------------------#
+  # Metadata
+  # ------------------------------------------------------------#
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Parameters for CodeCommit
+        Parameters:
+          - RepositoryName
+          - RepositoryDescription
+    ResourceTypes:
+      Tags:
+        - Key: DeployedBy
+          Value: !Sub cf-stack-${AWS::StackName}
+
+Parameters:
+  # ------------------------------------------------------------#
+  # Parameters
+  # ------------------------------------------------------------#
+  RepositoryName:
+    Type: String
+    Description: Repository name
+    Default: test-repository
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+
+  RepositoryDescription:
+    Type: String
+    Description: Repository description
+    Default: test-description
+    MaxLength: 4000
+
+Resources:
+  # ------------------------------------------------------------#
+  # CodeCommit
+  # ------------------------------------------------------------#
+  CodeCommit:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: !Ref RepositoryDescription
+      RepositoryName: !Ref RepositoryName
+
+Outputs:
+  # ------------------------------------------------------------#
+  # Outputs
+  # ------------------------------------------------------------#
+  CodeCommitRepositoryName:
+    Value: !GetAtt CodeCommit.Name
+    Export:
+      Name: codecommit-repository-name
+
+  CodeCommitRepositoryARN:
+    Value: !GetAtt CodeCommit.Arn
+    Export:
+      Name: codecommit-repository-arn

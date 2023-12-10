@@ -1,0 +1,79 @@
+ ビルドの手順
+ ローカル端末での作業
+ ① CodeCommitから配備用のプロジェクトを取得する。
+ 
+ SpringBootプロジェクト(gradle利用)
+ src/main/java
+ src/main/resources
+ src/test/java
+ src/test/resources
+ .classpath
+ .project
+ build.gradle
+ Dockerfile
+ ....
+ 
+ ② テスト用の以下のディレクトリ群を削除する。
+ 
+ src/test/
+ 
+ ③ 配備先環境用の署名付きCookie生成用の秘密鍵ファイルを格納する。
+ src/main/resources/files/private_key.pk8
+ 
+ ④ 配備先環境用のプロパティファイルを格納する。
+ src/main/resources/application.properties
+ 
+ ⑤ 配備先環境用のファビコンファイルを格納する。
+ src/main/resources/static/favicon.ico
+ 
+ ⑥ コマンドプロンプトを起動し、プロジェクトルートに移動する。
+ 
+ ⑦ gradleのビルドコマンドを実行する。
+ gradlew build
+ 作成するjarファイルは以下の名称
+ OXTVWebCastPF-0.0.1-SNAPSHOT.jar
+ 
+ メンテナンス用EC2での作業
+ AWS CLIをインストール済み。
+ ECR へのアクセス権限を持つIAMユーザーの登録済み。
+ docker をインストール済み。
+ 
+ ⑧ メンテナンス作業用EC2にSSH接続する。
+ 
+ ⑨ 作業ディレクトリに移動し、SCP機能を利用して⑦で作成したjarと、①で取得したDockerfileを配置する。
+ 
+ ⑩ ECRにログインする
+ aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 163773243688.dkr.ecr.ap-northeast-1.amazonaws.com
+ 弊社検証環境におけるコマンド
+ 
+ ⑪ Docker コンテナをビルドする。
+ docker build . -f Dockerfile -t oxtv/webcast-test
+ 
+ ⑫ ビルドしたDocker コンテナをタグ付けする。
+ docker tag oxtv/webcast-test:latest 163773243688.dkr.ecr.ap-northeast-1.amazonaws.com/dev-stream- ox-tv -repo:290th
+ 弊社検証環境におけるコマンド
+ お客様環境では 太字 部分が環境によって変わる。
+ ※最後尾のリビジョン番号は都度更新、環境によって異なり共通化はしていない。
+ 
+ ⑬ タグ付けしたコンテナイメージをECRにプッシュする。
+ docker push 163773243688.dkr.ecr.ap-northeast-1.amazonaws.com/dev-stream- ox-tv -repo:290th
+ 弊社検証環境におけるコマンド
+ お客様環境では 太字 部分が環境によって変わる。
+ ※最後尾のリビジョン番号は都度更新、環境によって異なり共通化はしていない。
+
+
+ここまでを自動化
+
+
+ AWS コンソールでの作業
+ ⑭ ECR にて、⑬でプッシュしたコンテナイメージを確認する。
+ 
+ ⑮ CloudFormation にて、配備先ECS用のスタックを選択する。
+ 
+ ⑯ 現在のテンプレートを使用した変更セットを作成する。
+ このとき、「ECSImageName」を⑭で確認したコンテナイメージに合わせた値に変更する。
+ 
+ ⑰ 作成した変更セットを実行する。
+ 
+ 以上がビルド手順です。
+ この他に必要な情報があれば、お尋ねください。

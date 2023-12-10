@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: CI/CD CodeBuild Stack
+
+Metadata:
+  # ------------------------------------------------------------#
+  # Metadata
+  # ------------------------------------------------------------#
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Parameters for CodeBuild
+        Parameters:
+          - BuildProjectName
+          - BuildProjectDescription
+    ResourceTypes:
+      Tags:
+        - Key: DeployedBy
+          Value: !Sub cf-stack-${AWS::StackName}
+
+Parameters:
+  # ------------------------------------------------------------#
+  # Parameters
+  # ------------------------------------------------------------#
+  BuildProjectName:
+    Type: String
+    Description: Repository name
+    Default: test-repository
+    MaxLength: 100
+    AllowedPattern: ^[a-zA-Z0-9\-]+$
+
+  BuildProjectDescription:
+    Type: String
+    Description: Repository description
+    Default: test-description
+    MaxLength: 4000
+
+Resources:
